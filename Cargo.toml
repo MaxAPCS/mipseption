@@ -3,5 +3,3 @@ name = "mipseption"
 version = "0.1.0"
 edition = "2024"
 description = "The worst MIPS interpreter in history"
-
-[dependencies]
