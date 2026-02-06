@@ -3,8 +3,7 @@ use std::{env, fs};
 fn main() -> Result<(), &'static str> {
     let file = fs::read_to_string(env::args().nth(1).ok_or("Program file required")?)
         .or(Err("Program file unreadable"))?;
-    let mut machine =
-        Interpreter::new(Program::parse(file.as_str()).or(Err("Program file corrupted"))?);
+    let mut machine = Interpreter::new(Program::parse(file.as_str())?);
     let exitcode = loop {
         if let Err(e) = machine.step() {
             break e;
@@ -28,8 +27,8 @@ impl Program {
         let mut entrypoint = None;
 
         for line in program.lines() {
-            if line.starts_with(";") {
-                continue; // skip comments
+            if line.starts_with(";") || line.is_empty() {
+                continue; // skip comments, empty lines
             }
 
             let (address, contents) = line.split_once(": ").ok_or("Failed to parse line!")?;
@@ -171,11 +170,15 @@ impl Interpreter {
                 if self.registers[5] < self.registers[4] {
                     return Err(-1);
                 }
-                let mut buf = String::new();
-                for i in self.registers[5]..self.registers[4] {
-                    let n = self.program.index(i).or(Err(-1))?;
-                    let c = char::from_u32(*n).ok_or(-1)?;
-                    buf.push(c);
+                let mut buf =
+                    String::with_capacity((self.registers[5] - self.registers[4]) as usize);
+                'outer: for i in (self.registers[4]..=self.registers[5]).step_by(4) {
+                    for n in self.program.index(i)?.to_be_bytes() {
+                        if n == 0 {
+                            break 'outer; // null-termination
+                        }
+                        buf.push(n as char);
+                    }
                 }
                 print!("{}", buf);
                 Ok(())
@@ -184,7 +187,7 @@ impl Interpreter {
                 // Read integer
                 let mut buf = String::new();
                 std::io::stdin().read_line(&mut buf).map_err(|_| -1)?;
-                let num = buf.parse::<i32>().map_err(|_| -1)?;
+                let num = buf.trim().parse::<i32>().map_err(|_| -1)?;
                 self.registers[2] = u32::from_ne_bytes(num.to_ne_bytes());
                 Ok(())
             }
@@ -195,13 +198,21 @@ impl Interpreter {
                 }
                 let mut buf = String::new();
                 std::io::stdin().read_line(&mut buf).map_err(|_| -1)?;
-                let mut buf: std::slice::Iter<'_, [u8; 4]> =
-                    buf.as_bytes().as_chunks::<4>().0.into_iter();
-                for i in self.registers[5]..self.registers[4] {
-                    let n = self.program.access(i).or(Err(-1))?;
-                    if let Some(byte) = buf.next() {
-                        *n = u32::from_ne_bytes(*byte);
+                let buf = buf
+                    .trim_end_matches("\n")
+                    .chars()
+                    .map(|c| c as u8)
+                    .collect::<Vec<_>>();
+                let buf = buf.as_chunks::<4>();
+                let mut chunk_iter = buf.0.into_iter();
+                for i in (self.registers[4]..=self.registers[5]).step_by(4) {
+                    let n = self.program.access(i)?;
+                    if let Some(fourchars) = chunk_iter.next() {
+                        *n = u32::from_ne_bytes(*fourchars);
                     } else {
+                        let mut padchars = [0; 4];
+                        padchars[..buf.1.len()].copy_from_slice(buf.1);
+                        *n = u32::from_ne_bytes(padchars);
                         break;
                     }
                 }
@@ -350,6 +361,10 @@ impl Interpreter {
         let src = self.registers[rs];
         let dst = &mut self.registers[rd];
         match opcode {
+            0x01 if rd == 0 // bltz
+                => if (src as i32) <  0 {self.pc += (immediate as u32) << 2},
+            0x01 if rd == 1 // bgez
+                => if (src as i32) >= 0 {self.pc += (immediate as u32) << 2},
             0x04 // beq
                 => if src == *dst {self.pc += (immediate as u32) << 2},
             0x05 // bne
