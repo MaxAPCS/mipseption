@@ -1,17 +1,17 @@
 use std::{env, fs};
 
-fn main() {
-    let file = fs::read_to_string(env::args().nth(1).expect("Program file required"))
-        .expect("Program file unreadable");
+fn main() -> Result<(), &'static str> {
+    let file = fs::read_to_string(env::args().nth(1).ok_or("Program file required")?)
+        .or(Err("Program file unreadable"))?;
     let mut machine =
-        Interpreter::new(Program::parse(file.as_str()).expect("Program file corrupted"));
+        Interpreter::new(Program::parse(file.as_str()).or(Err("Program file corrupted"))?);
     let exitcode = loop {
         if let Err(e) = machine.step() {
             break e;
         }
     };
-    println!("Process exited with code {}", exitcode);
-    std::process::exit(exitcode)
+    println!("\nProcess exited with code {}", exitcode);
+    Ok(())
 }
 
 struct Program {
@@ -216,11 +216,6 @@ impl Interpreter {
         }
     }
 
-    fn segfault(&self) -> Result<(), i32> {
-        eprintln!("Segmentation Fault: core not dumped why would i dump that");
-        Err(-1)
-    }
-
     fn execute(&mut self, instr: u32) -> Result<(), i32> {
         self.registers[0] = 0; // $zero is always 0 (easier than doing checks)
         let opcode = instr >> 26;
@@ -340,7 +335,7 @@ impl Interpreter {
                 => self.registers[rd] = ((self.registers[rs] as i32) < (self.registers[rt] as i32)) as u32,
             0x2b // sltu
                 => self.registers[rd] = (self.registers[rs] < self.registers[rt]) as u32,
-            _ => return self.segfault()
+            _ => {eprintln!("Invalid Instruction"); return Err(-1)}
         }
         Ok(())
     }
@@ -383,12 +378,13 @@ impl Interpreter {
                 => *dst = *self.program.index(src + immediate as u32)?,
             0x2b // sw
                => *self.program.access(src + immediate as u32)? = *dst,
-            _ => return self.segfault(),
+            _ => {eprintln!("Invalid Instruction"); return Err(-1)}
         }
         Ok(())
     }
 }
 
+#[inline]
 fn jumpaddr(pc: u32, instr: u32) -> u32 {
     return (pc & 0b11110000_00000000_00000000_00000000)
         | ((instr & 0b00000011_11111111_11111111_11111111) << 2);
